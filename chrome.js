@@ -2,16 +2,19 @@
   'use strict';
 
   const wordmark = document.getElementById('brand-wordmark');
-  let frame = 0;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const interval = 2500;
+  let timer;
 
-  function renderWordmark() {
-    wordmark.toggleAttribute('data-compact', window.scrollY > 28);
-    frame = 0;
+  function syncTimer() {
+    clearInterval(timer);
+    if (reducedMotion.matches) wordmark.removeAttribute('data-compact');
+    if (document.hidden || reducedMotion.matches) return;
+
+    timer = setInterval(() => wordmark.toggleAttribute('data-compact'), interval);
   }
 
-  window.addEventListener('scroll', () => {
-    if (!frame) frame = requestAnimationFrame(renderWordmark);
-  }, {passive:true});
-  window.addEventListener('pageshow', renderWordmark);
-  renderWordmark();
+  document.addEventListener('visibilitychange', syncTimer);
+  reducedMotion.addEventListener('change', syncTimer);
+  syncTimer();
 })();

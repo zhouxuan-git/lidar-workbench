@@ -25,9 +25,9 @@
     varying mediump float vHidden;
 
     vec3 heightColor(float height) {
-      vec3 blue = vec3(0.30, 0.54, 1.00);
-      vec3 mint = vec3(0.26, 0.92, 0.76);
-      vec3 amber = vec3(1.00, 0.72, 0.34);
+      vec3 blue = vec3(0.21, 0.36, 0.57);
+      vec3 mint = vec3(0.24, 0.51, 0.44);
+      vec3 amber = vec3(0.72, 0.40, 0.21);
       if (height < 0.52) return mix(blue, mint, height / 0.52);
       return mix(mint, amber, (height - 0.52) / 0.48);
     }
@@ -61,7 +61,9 @@
       float radius = distance(gl_PointCoord, vec2(0.5));
       if (uSize > 1.75 && radius > 0.5) discard;
       float opacity = uSize > 1.75 ? 1.0 - 0.40 * smoothstep(0.30, 0.50, radius) : 1.0;
-      gl_FragColor = vec4(vColor, opacity);
+      float luminance = dot(vColor, vec3(0.2126, 0.7152, 0.0722));
+      float paleEdge = smoothstep(0.62, 0.97, luminance) * smoothstep(0.20, 0.48, radius);
+      gl_FragColor = vec4(vColor * (1.0 - 0.27 * paleEdge), opacity);
     }
   `;
 
@@ -83,7 +85,7 @@
       if (uMarker > 0.5) {
         float radius = distance(gl_PointCoord, vec2(0.5));
         if (radius > 0.50) discard;
-        gl_FragColor = vec4(mix(vec3(0.05, 0.13, 0.15), uColor.rgb, smoothstep(0.23, 0.33, radius)), uColor.a);
+        gl_FragColor = vec4(mix(vec3(0.99, 0.97, 0.94), uColor.rgb, smoothstep(0.23, 0.33, radius)), uColor.a);
       } else {
         gl_FragColor = uColor;
       }
@@ -378,12 +380,12 @@
       projection = cameraMatrix(camera, canvas.width / canvas.height, cloud.radius);
 
       gl.depthMask(false);
-      drawLines(gpu.grid, gridCount, [0.27, 0.46, 0.60, 0.30]);
+      drawLines(gpu.grid, gridCount, [0.52, 0.46, 0.38, 0.35]);
       gl.depthMask(true);
       drawPoints();
       if (measurementCount > 0) {
         gl.disable(gl.DEPTH_TEST);
-        const color = [0.42, 0.98, 0.82, 1];
+        const color = [0.62, 0.25, 0.17, 1];
         if (measurementCount === 2) drawLines(gpu.measurement, 2, color);
         drawLines(gpu.measurement, measurementCount, color, gl.POINTS, true);
         gl.enable(gl.DEPTH_TEST);

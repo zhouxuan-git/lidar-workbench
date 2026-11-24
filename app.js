@@ -2,20 +2,21 @@
   'use strict';
 
   const $ = id => document.getElementById(id);
-  const classLabels = ['顶棚', '地板', '墙面', '梁', '柱', '窗', '门', '桌子', '椅子', '沙发', '书柜', '白板', '杂物'];
-  const palette = ['#a6bbd7', '#547b9d', '#7db4c9', '#d0a3dc', '#97bd6d', '#7c6eed', '#d59a83', '#73e1bd', '#ffca8a', '#ed91bc', '#7c9eff', '#f2eed7', '#b6ab88'];
+  const i18n = window.LidarI18n;
+  const {t, localError, describeError, number} = i18n;
+  const palette = ['#687e9c', '#526b82', '#3f8a91', '#81568f', '#607f36', '#6654ba', '#ae664b', '#24866c', '#9e601b', '#ae5277', '#436db2', '#807238', '#827357'];
   const classColors = Array.from({length: 256}, (_, index) => palette[index % palette.length]);
-  classColors[255] = '#a3aeba';
-  const number = new Intl.NumberFormat('zh-CN');
+  classColors[255] = '#68747e';
   const roomOrder = new Intl.Collator('en', {numeric: true});
-  const roomLabels = {office: '办公室', conferenceRoom: '会议室', hallway: '走廊', copyRoom: '复印室', storage: '储藏室', pantry: '茶水间', lobby: '大厅', lounge: '休息区', openspace: '开放空间', WC: '卫生间', auditorium: '报告厅'};
-  const areaLabel = area => ({Demo:'演示', Imported:'本地导入'})[area] || area.replace('_', ' ');
+  const areaLabel = area => area === 'Demo' ? t('demoArea') : area === 'Imported' ? t('importedArea') : area.replace('_', ' ');
   const pointSize = $('point-size');
   const requests = new Map();
+  const messages = new Map();
   const demos = window.LidarDemos;
   const importedScenes = [];
   let catalog = window.LidarData || demos;
   let libraryFiles = null;
+  let scenePack = null;
   let area = null;
   let selectedId = null;
   let active = null;
@@ -41,8 +42,12 @@
   };
   window.addEventListener('error', event => {
     if (event.target !== $('viewport')) return;
-    showStageMessage('三维视图发生错误。请刷新页面重试。');
+    showStageMessage('errorView');
   }, true);
+
+  $('language-zh').addEventListener('click', () => switchLanguage('zh'));
+  $('language-en').addEventListener('click', () => switchLanguage('en'));
+  switchLanguage('en');
 
   try {
     viewer = window.LidarViewer.create($('viewport'), {
@@ -53,35 +58,50 @@
     viewer.setClassColors(classColors);
     viewer.setPointSize(Number(pointSize.value));
   } catch (error) {
-    showStageMessage('无法启动三维视图。请用启用了硬件加速的 Chrome 或 Edge 打开。');
-    $('load-status').textContent = 'WebGL 初始化失败';
+    showStageMessage('errorWebGL');
+    setStatus('statusWebGL');
     console.error(error);
-    for (const button of document.querySelectorAll('button')) button.disabled = true;
+    for (const button of document.querySelectorAll('button:not(#language-zh):not(#language-en)')) button.disabled = true;
     return;
   }
 
   function roomName(scene) {
     if (scene.imported) return scene.room;
     const match = /^(.*)_(\d+)$/.exec(scene.room);
-    if (match && roomLabels[match[1]]) return roomLabels[match[1]] + ' ' + match[2];
+    const label = match && i18n.room(match[1]);
+    if (label) return label + ' ' + match[2];
     return scene.room;
   }
 
   function className(index) {
-    if (index === 255) return '未标注';
-    return (active?.builtIn && classLabels[index]) || ('类别 ' + index);
+    if (index === 255) return t('unlabeled');
+    return (active?.builtIn && i18n.classLabel(index)) || t('classNumber', index);
   }
 
-  function showStageMessage(message) {
-    $('stage-message').textContent = message;
-    $('stage-message').hidden = !message;
+  function renderMessage(id) {
+    const message = messages.get(id);
+    const element = $(id);
+    element.textContent = message ? message() : '';
+    if (id !== 'load-status') element.hidden = !message;
   }
 
-  function notify(message) {
+  function setMessage(id, key, ...args) {
+    if (key) {
+      messages.set(id, typeof key === 'function' ? key : () => t(key, ...args.map(arg => typeof arg === 'function' ? arg() : arg)));
+    } else {
+      messages.delete(id);
+    }
+    renderMessage(id);
+  }
+
+  function showStageMessage(key, ...args) {
+    setMessage('stage-message', key, ...args);
+  }
+
+  function notify(key, ...args) {
     clearTimeout(toastTimer);
-    $('toast').textContent = message;
-    $('toast').hidden = false;
-    toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3400);
+    setMessage('toast', key, ...args);
+    toastTimer = setTimeout(() => setMessage('toast', ''), 4200);
   }
 
   function setPressed(parent, property, value) {
@@ -90,8 +110,29 @@
     }
   }
 
-  function setStatus(message) {
-    $('load-status').textContent = message;
+  function setStatus(key) {
+    setMessage('load-status', key);
+  }
+
+  function switchLanguage(value) {
+    if (!i18n.setLanguage(value)) return;
+    document.documentElement.lang = value === 'en' ? 'en' : 'zh-CN';
+    document.title = value === 'en' ? 'LiDAR Workbench' : t('brandCaption');
+    document.querySelector('meta[name="description"]')?.setAttribute('content', t('description'));
+    $('language-en').setAttribute('aria-pressed', String(value === 'en'));
+    $('language-zh').setAttribute('aria-pressed', String(value === 'zh'));
+    i18n.applyStatic();
+    $('inspector-title').textContent = t(compareOpen ? 'inspectorLeft' : 'inspector');
+    if (!active) $('scene-name').textContent = t('loading');
+    renderSceneChoices();
+    renderLibrary();
+    renderActiveDetails();
+    renderComparisonDetails();
+    updateClip();
+    renderClasses();
+    renderSelection();
+    updateTool();
+    for (const id of messages.keys()) renderMessage(id);
   }
 
   function allScenes() {
@@ -99,8 +140,8 @@
   }
 
   function sceneSource(scene) {
-    if (scene.demo) return '合成演示';
-    if (scene.imported) return '本地文件';
+    if (scene.demo) return t('synthSource');
+    if (scene.imported) return t('localFile');
     return scene.id.replace('_', ' ');
   }
 
@@ -125,11 +166,15 @@
     const scenes = entries.filter(scene => scene.area === area);
     const search = $('room-search').value.trim().toLowerCase();
     const matches = scenes
-      .filter(scene => (scene.room + ' ' + roomName(scene)).toLowerCase().includes(search))
+      .filter(scene => {
+        const match = !scene.imported && /^(.*)_(\d+)$/.exec(scene.room);
+        const labels = match ? i18n.roomTerms(match[1]).map(label => label + ' ' + match[2]) : [];
+        return [scene.room, roomName(scene), ...labels].some(label => label.toLowerCase().includes(search));
+      })
       .sort((a, b) => roomOrder.compare(a.room, b.room));
     const catalogAreaCount = new Set(catalog.scenes.map(scene => scene.area)).size;
-    $('dataset-name').textContent = catalog === demos ? '演示场景' : 'S3DIS';
-    $('dataset-summary').textContent = catalog === demos ? catalog.scenes.length + ' 个合成场景' : catalogAreaCount + ' 个区域 · ' + catalog.scenes.length + ' 个房间';
+    $('dataset-name').textContent = catalog === demos ? t('demoScenes') : 'S3DIS';
+    $('dataset-summary').textContent = catalog === demos ? t('demoSummary', number(catalog.scenes.length)) : t('catalogSummary', number(catalogAreaCount), number(catalog.scenes.length));
     $('areas').replaceChildren(...areas.map(item => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -145,7 +190,7 @@
       });
       return button;
     }));
-    $('room-count').textContent = number.format(matches.length);
+    $('room-count').textContent = number(matches.length);
     const roomButtons = matches.map(scene => {
       const button = document.createElement('button');
       const label = document.createElement('span');
@@ -161,7 +206,7 @@
     if (!roomButtons.length) {
       const empty = document.createElement('p');
       empty.className = 'empty-text';
-      empty.textContent = '没有匹配的房间';
+      empty.textContent = t('noRooms');
       roomButtons.push(empty);
     }
     const list = $('rooms');
@@ -183,10 +228,10 @@
         requests.delete(scene.id);
         if (error) reject(error);
         else if (request.encoded) resolve(request.encoded);
-        else reject(new Error('场景文件缺少点云数据。'));
+        else reject(localError('errorSceneData'));
       };
       script.onload = () => finish();
-      script.onerror = () => finish(new Error('无法读取场景文件，请确认 data 文件夹与网页同在。'));
+      script.onerror = () => finish(localError('errorSceneFile'));
       document.head.append(script);
     });
     requests.set(scene.id, request);
@@ -196,19 +241,24 @@
   async function readSelectedScene(scene) {
     const filename = scene.file.split('/').pop();
     const file = libraryFiles.get(filename);
-    if (!file) throw new Error('场景库缺少 ' + filename + '。');
+    if (!file) throw localError('errorSceneMissing', filename);
     const text = await file.text();
     const match = /^\s*window\.LidarRegister\(\s*("(?:[^"\\]|\\.)*")\s*,\s*"([A-Za-z0-9+/=]+)"\s*\)\s*;\s*$/.exec(text);
-    if (!match || JSON.parse(match[1]) !== scene.id) throw new Error('场景文件与目录清单不匹配。');
+    if (!match || JSON.parse(match[1]) !== scene.id) throw localError('errorSceneMismatch');
     return match[2];
   }
 
-  function decodeScene(scene, encoded) {
-    const bytes = atob(encoded);
+  function decodeScene(scene, source) {
+    let raw;
+    if (typeof source === 'string') {
+      const bytes = atob(source);
+      raw = new Uint8Array(bytes.length);
+      for (let index = 0; index < bytes.length; index++) raw[index] = bytes.charCodeAt(index);
+    } else {
+      raw = new Uint8Array(source);
+    }
     const count = scene.sampleCount;
-    if (bytes.length !== count * 16) throw new Error('场景点数与目录清单不匹配。');
-    const raw = new Uint8Array(bytes.length);
-    for (let index = 0; index < bytes.length; index++) raw[index] = bytes.charCodeAt(index);
+    if (raw.length !== count * 16) throw localError('errorPointMismatch');
     const view = new DataView(raw.buffer);
     const positions = new Float32Array(count * 3);
     const colors = new Uint8Array(count * 3);
@@ -218,7 +268,7 @@
       const vec = index * 3;
       for (let axis = 0; axis < 3; axis++) {
         positions[vec + axis] = view.getFloat32(offset + axis * 4, true);
-        if (!Number.isFinite(positions[vec + axis])) throw new Error('场景包含无效坐标。');
+        if (!Number.isFinite(positions[vec + axis])) throw localError('errorCoordinates');
         colors[vec + axis] = raw[offset + 12 + axis];
       }
       labels[index] = raw[offset + 15];
@@ -229,6 +279,7 @@
   async function readCloud(scene) {
     if (scene.imported) return scene.cloud;
     if (scene.demo) return demos.make(scene.id);
+    if (scenePack) return decodeScene(scene, await scenePack.read(scene));
     return decodeScene(scene, await (libraryFiles ? readSelectedScene(scene) : readSceneScript(scene)));
   }
 
@@ -250,8 +301,9 @@
     area = scene.area;
     $('primary-scene').value = selectedId;
     renderLibrary(true);
-    showStageMessage('正在读取 ' + roomName(scene) + '…');
-    setStatus('正在读取点云');
+    setImportProgress(null);
+    showStageMessage('readingScene', () => roomName(scene));
+    setStatus('readingCloud');
     try {
       const cloud = await readCloud(scene);
       if (token !== requestId) return;
@@ -261,8 +313,8 @@
       selectedId = active?.scene?.id || null;
       $('primary-scene').value = selectedId || '';
       renderLibrary(true);
-      showStageMessage(error.message);
-      setStatus('读取失败');
+      showStageMessage(() => describeError(error, 'errorSceneFile'));
+      setStatus('loadFailed');
     }
   }
 
@@ -278,14 +330,7 @@
     tool = 'inspect';
     clip = !scene.imported && !scene.demo;
     $('clip-range').value = clip ? '880' : '1000';
-    $('scene-path').textContent = scene.imported ? '本地导入' : (scene.demo ? '合成点云 · 演示场景' : 'S3DIS / ' + areaLabel(scene.area));
-    $('scene-name').textContent = roomName(scene);
-    $('stage-source').textContent = sceneSource(scene);
-    $('raw-count').textContent = number.format(cloud.pointCount);
-    $('scene-size').textContent = bounds.max.map((value, index) => (value - bounds.min[index]).toFixed(2)).join(' × ') + sceneUnits(scene);
-    $('scene-size').title = scene.imported ? '采样点的 X × Y × Z 尺寸，原坐标单位' : '采样点的 X × Y × Z 尺寸，米';
-    $('height-low').textContent = '0';
-    $('height-high').textContent = (bounds.max[2] - bounds.min[2]).toFixed(2) + sceneUnits(scene);
+    renderActiveDetails();
     setAvailableModes($('modes'), cloud);
     viewer.setClassFilter(null);
     viewer.setMeasurement(null);
@@ -298,8 +343,21 @@
     renderSelection();
     updateTool();
     showStageMessage('');
-    setStatus(scene?.demo ? '合成演示数据' : (cloud.sampleCount < cloud.pointCount ? '按房间采样显示' : '数据已就绪'));
+    setStatus(scene.demo ? 'demoStatus' : (cloud.sampleCount < cloud.pointCount ? (scene.imported ? 'pointSampleStatus' : 'sampleStatus') : 'ready'));
     updateComparison();
+  }
+
+  function renderActiveDetails() {
+    if (!active) return;
+    const {scene, cloud, bounds} = active;
+    $('scene-path').textContent = scene.imported ? t('importedArea') : (scene.demo ? t('syntheticPath') : 'S3DIS / ' + areaLabel(scene.area));
+    $('scene-name').textContent = roomName(scene);
+    $('stage-source').textContent = sceneSource(scene);
+    $('raw-count').textContent = number(cloud.pointCount);
+    $('scene-size').textContent = bounds.max.map((value, index) => (value - bounds.min[index]).toFixed(2)).join(' × ') + sceneUnits(scene);
+    $('scene-size').title = t(scene.imported ? 'sizeNative' : 'sizeMetric');
+    $('height-low').textContent = '0';
+    $('height-high').textContent = (bounds.max[2] - bounds.min[2]).toFixed(2) + sceneUnits(scene);
   }
 
   function setAvailableModes(buttons, cloud) {
@@ -329,7 +387,7 @@
     $('compare-panel').hidden = !open;
     $('sync-toggle').hidden = !open;
     $('primary-label').hidden = !open;
-    $('inspector-title').textContent = open ? '左侧数据检查' : '数据检查';
+    $('inspector-title').textContent = t(open ? 'inspectorLeft' : 'inspector');
     if (open) {
       updateComparison();
       requestAnimationFrame(matchLeftCamera);
@@ -352,13 +410,12 @@
     if (!entries.some(scene => scene.id === compareChoice)) compareChoice = '';
     $('primary-scene').replaceChildren(...[...groups.values()].map(group => group.cloneNode(true)));
     $('primary-scene').value = selectedId || catalog.defaultScene;
-    $('compare-scene').replaceChildren(new Option('同左侧', ''), ...groups.values());
+    $('compare-scene').replaceChildren(new Option(t('sameScene'), ''), ...groups.values());
     $('compare-scene').value = compareChoice;
   }
 
-  function compareMessage(message) {
-    $('compare-message').textContent = message;
-    $('compare-message').hidden = !message;
+  function compareMessage(key, ...args) {
+    setMessage('compare-message', key, ...args);
   }
 
   function setComparisonMode(mode) {
@@ -381,7 +438,7 @@
       matchLeftCamera();
       return;
     }
-    compareMessage('正在读取 ' + roomName(target) + '…');
+    compareMessage('readingScene', () => roomName(target));
     try {
       const cloud = target === active.scene ? active.cloud : await readCloud(target);
       if (token !== compareRequestId) return;
@@ -396,8 +453,7 @@
       const bounds = target === active.scene ? active.bounds : computeBounds(cloud.positions);
       compareViewer.setCloud(cloud);
       comparison = {scene:target, cloud, bounds};
-      $('compare-source').textContent = target.demo ? '合成 · ' + roomName(target) : sceneSource(target);
-      $('compare-height-high').textContent = (bounds.max[2] - bounds.min[2]).toFixed(2) + sceneUnits(target);
+      renderComparisonDetails();
       setAvailableModes($('compare-modes'), cloud);
       setComparisonMode(compareMode);
       updateCompareClip();
@@ -405,8 +461,15 @@
       compareMessage('');
     } catch (error) {
       if (token !== compareRequestId) return;
-      compareMessage(error.message || '无法读取右侧点云。');
+      compareMessage(() => describeError(error, 'errorCompare'));
     }
+  }
+
+  function renderComparisonDetails() {
+    if (!comparison) return;
+    const {scene, bounds} = comparison;
+    $('compare-source').textContent = scene.demo ? t('syntheticName', roomName(scene)) : sceneSource(scene);
+    $('compare-height-high').textContent = (bounds.max[2] - bounds.min[2]).toFixed(2) + sceneUnits(scene);
   }
 
   function renderClasses() {
@@ -415,7 +478,7 @@
     $('reset-class').hidden = classFilter === null;
     list.replaceChildren();
     if (!active?.cloud.hasLabels) {
-      description.textContent = '这份点云没有类别字段。';
+      description.textContent = t('noClasses');
       return;
     }
     const items = active.counts
@@ -423,7 +486,7 @@
       .filter(item => item.count > 0 && item.index !== 255)
       .sort((a,b) => b.count - a.count);
     const denominator = active.originalClasses ? active.cloud.pointCount : active.cloud.sampleCount;
-    description.textContent = active.originalClasses ? '人工标注 · 按原始点数统计' : (active.scene?.demo ? '合成类别 · 点击筛选' : '文件类别 · 按采样点统计');
+    description.textContent = t(active.originalClasses ? 'annotationStats' : (active.scene.demo ? 'syntheticStats' : 'fileStats'));
     for (const item of items) {
       const button = document.createElement('button');
       const swatch = document.createElement('span');
@@ -439,7 +502,7 @@
       label.textContent = className(item.index);
       share.className = 'percent numeric';
       share.textContent = percent < 0.1 ? '<0.1%' : percent.toFixed(1) + '%';
-      button.title = label.textContent + ' · ' + number.format(item.count) + ' 点';
+      button.title = label.textContent + ' · ' + t('points', number(item.count));
       button.append(swatch, label, share);
       button.addEventListener('click', () => changeFilter(classFilter === item.index ? null : item.index));
       list.append(button);
@@ -478,8 +541,8 @@
   function updateRenderCount() {
     if (!active) return;
     const count = countVisible(active.cloud, currentCut(active.bounds), classFilter);
-    $('render-count').textContent = number.format(count);
-    $('render-count').title = number.format(active.cloud.sampleCount) + ' 个采样点，当前显示 ' + number.format(count) + ' 个';
+    $('render-count').textContent = number(count);
+    $('render-count').title = t('countTitle', number(active.cloud.sampleCount), number(count));
   }
 
   function updateClip() {
@@ -492,7 +555,7 @@
     if (cut !== null) {
       const height = (cut - active.bounds.min[2]).toFixed(2) + sceneUnits(active.scene);
       $('clip-value').textContent = height;
-      $('stage-clip').textContent = '剖切 ≤ ' + height;
+      $('stage-clip').textContent = t('clipValue', height);
     }
     updateRenderCount();
     updateCompareClip();
@@ -505,15 +568,15 @@
     compareViewer.setClip(cut);
     $('compare-clip').hidden = cut === null;
     if (cut !== null) $('compare-clip').textContent = '≤ ' + (cut - bounds.min[2]).toFixed(2) + sceneUnits(scene);
-    $('compare-count').textContent = number.format(countVisible(cloud, cut)) + ' 点';
+    $('compare-count').textContent = t('points', number(countVisible(cloud, cut)));
   }
 
   function updateTool() {
     $('inspect-tool').setAttribute('aria-pressed', String(tool === 'inspect'));
     $('measure-tool').setAttribute('aria-pressed', String(tool === 'measure'));
-    $('selection-title').textContent = tool === 'measure' ? '测距结果' : '拾取结果';
+    $('selection-title').textContent = t(tool === 'measure' ? 'measureResult' : 'pickResult');
     const touch = matchMedia('(pointer: coarse)').matches;
-    $('hint').textContent = tool === 'measure' ? '在左侧依次点击两个点测距' : (touch ? '单指旋转 · 双指缩放和平移' : '拖拽旋转 · 滚轮缩放 · Shift 拖拽平移');
+    $('hint').textContent = t(tool === 'measure' ? 'measureHow' : (touch ? 'leftMeasurePoints' : 'leftMousePoints'));
   }
 
   function asArray(point) {
@@ -540,7 +603,7 @@
     if (!selection) {
       const message = document.createElement('p');
       message.className = 'section-meta';
-      message.textContent = tool === 'measure' ? '点击视图里的第一个点。' : '点击视图里的点查看坐标。';
+      message.textContent = t(tool === 'measure' ? 'measureHint' : 'pickHint');
       target.append(message);
       return;
     }
@@ -556,14 +619,14 @@
     if (selection.point) {
       const point = selection.point;
       for (const axis of ['x', 'y', 'z']) line(axis.toUpperCase(), point[axis].toFixed(3));
-      if (active.cloud.hasLabels) line('类别', className(active.cloud.labels[point.index]));
+      if (active.cloud.hasLabels) line(t('class'), className(active.cloud.labels[point.index]));
     } else {
-      line('起点', asArray(selection.start).map(value => value.toFixed(2)).join(', '));
+      line(t('measureStart'), asArray(selection.start).map(value => value.toFixed(2)).join(', '));
       if (selection.end) {
         const {start,end} = selection;
-        line('终点', asArray(end).map(value => value.toFixed(2)).join(', '));
-        line('直线距离', Math.hypot(start.x-end.x, start.y-end.y, start.z-end.z).toFixed(3) + (active.scene.imported ? ' 坐标单位' : ' m'));
-      } else line('终点', '请点击第二个点');
+        line(t('measureEnd'), asArray(end).map(value => value.toFixed(2)).join(', '));
+        line(t('measureDistance'), Math.hypot(start.x-end.x, start.y-end.y, start.z-end.z).toFixed(3) + (active.scene.imported ? ' ' + t('measureUnit') : ' m'));
+      } else line(t('measureEnd'), t('secondPoint'));
     }
     target.append(result);
   }
@@ -592,19 +655,99 @@
   async function readLibrary(files) {
     const items = new Map([...files].filter(file => file.name.endsWith('.js')).map(file => [file.name,file]));
     const catalogFile = items.get('catalog.js');
-    if (!catalogFile || catalogFile.size > 2000000) throw new Error('请选择点云工作台里的 data 文件夹。');
+    if (!catalogFile || catalogFile.size > 2000000) throw localError('errorFolder');
     const match = /^\s*window\.LidarData\s*=\s*(\{[\s\S]*\})\s*;\s*$/.exec(await catalogFile.text());
-    if (!match) throw new Error('场景库的目录清单格式不正确。');
-    const incoming = JSON.parse(match[1]);
-    if (!Array.isArray(incoming.scenes) || !incoming.scenes.length || !incoming.scenes.every(isScene)) {
-      throw new Error('场景库没有有效的点云目录。');
+    if (!match) throw localError('errorCatalog');
+    let incoming;
+    try { incoming = JSON.parse(match[1]); } catch { throw localError('errorCatalog'); }
+    return {catalog:incoming, items};
+  }
+
+  async function openSceneLibrary(read, filename, fallback) {
+    const token = ++requestId;
+    setImportProgress(null);
+    showStageMessage('readingPack', filename);
+    setStatus('checkingPack');
+    try {
+      const result = await read();
+      if (token !== requestId) return;
+      const incoming = result.catalog;
+      if (!Array.isArray(incoming?.scenes) || !incoming.scenes.length || !incoming.scenes.every(isScene)) {
+        throw localError('errorCatalogEmpty');
+      }
+      scenePack = result.read ? result : null;
+      libraryFiles = result.items || null;
+      catalog = incoming;
+      compareChoice = '';
+      renderSceneChoices();
+      $('room-search').value = '';
+      await loadScene(catalog.scenes.find(scene => scene.id === catalog.defaultScene) || catalog.scenes[0]);
+    } catch (error) {
+      if (token !== requestId) return;
+      showStageMessage('');
+      setStatus('importFailed');
+      notify(() => describeError(error, fallback));
     }
-    libraryFiles = items;
-    catalog = incoming;
-    compareChoice = '';
-    renderSceneChoices();
-    $('room-search').value = '';
-    await loadScene(catalog.scenes.find(scene => scene.id === catalog.defaultScene) || catalog.scenes[0]);
+  }
+
+  function openDataPack(file) {
+    if (isRawArchive(file.name)) {
+      notify('errorArchive');
+      return;
+    }
+    if (!/\.lidar$/i.test(file.name)) {
+      notify('errorPackExtension');
+      return;
+    }
+    return openSceneLibrary(() => window.LidarScenePack.open(file), file.name, 'errorPack');
+  }
+
+  function isRawArchive(name) {
+    return /\.(?:tar|gz|tgz|zip|7z)$/i.test(name);
+  }
+
+  function setImportProgress(value) {
+    const progress = $('import-progress');
+    progress.hidden = value === null;
+    if (value !== null) progress.value = value;
+  }
+
+  async function importFile(file) {
+    if (/\.lidar$/i.test(file.name)) {
+      await openDataPack(file);
+      return;
+    }
+    if (isRawArchive(file.name)) {
+      notify('errorArchive');
+      return;
+    }
+    const token = ++requestId;
+    showStageMessage('readingFile', file.name);
+    setStatus('readingLocal');
+    setImportProgress(0);
+    try {
+      await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      const cloud = await window.LidarFormats.read(file, {
+        onProgress(value) {
+          if (token !== requestId) throw new DOMException('Import superseded', 'AbortError');
+          setImportProgress(value);
+        },
+      });
+      if (token !== requestId) return;
+      const duplicate = importedScenes.filter(scene => scene.cloud.name === cloud.name).length;
+      const room = cloud.name + (duplicate ? ' (' + (duplicate + 1) + ')' : '');
+      const scene = {id:'local:' + (importedScenes.length + 1), area:'Imported', room, imported:true, cloud};
+      importedScenes.push(scene);
+      $('room-search').value = '';
+      renderSceneChoices();
+      loadScene(scene);
+    } catch (error) {
+      if (token !== requestId) return;
+      setImportProgress(null);
+      showStageMessage('');
+      setStatus('importFailed');
+      notify(() => describeError(error, 'errorImport'));
+    }
   }
 
   function loadSnapshot(dataUrl) {
@@ -618,8 +761,8 @@
 
   function fillSnapshot(context, x, y, width, height) {
     const gradient = context.createRadialGradient(x + width / 2, y + height / 3, 0, x + width / 2, y + height / 2, Math.max(width, height) * .68);
-    gradient.addColorStop(0, '#213849');
-    gradient.addColorStop(1, '#0a151f');
+    gradient.addColorStop(0, '#ffffff');
+    gradient.addColorStop(1, '#f5f5f2');
     context.fillStyle = gradient;
     context.fillRect(x, y, width, height);
   }
@@ -637,14 +780,14 @@
       canvas.width = images.reduce((width, image) => width + image.naturalWidth, 0) + gap;
       canvas.height = Math.max(...images.map(image => image.naturalHeight)) + heading;
       const context = canvas.getContext('2d');
-      context.fillStyle = '#111d29';
+      context.fillStyle = '#ffffff';
       context.fillRect(0, 0, canvas.width, canvas.height);
       let offset = 0;
       images.forEach((image, index) => {
         fillSnapshot(context, offset, heading, image.naturalWidth, canvas.height - heading);
         context.drawImage(image, offset, heading);
         if (includeComparison) {
-          context.fillStyle = '#e7eef5';
+          context.fillStyle = '#20211d';
           context.font = '600 15px sans-serif';
           context.fillText(frames[index].name, offset + 10, 23, image.naturalWidth - 20);
         }
@@ -656,9 +799,9 @@
       document.body.append(link);
       link.click();
       link.remove();
-      notify(includeComparison ? '已导出左右视图。' : '已导出当前视图。');
+      notify(includeComparison ? 'savedComparison' : 'savedView');
     } catch {
-      notify('无法生成当前视图截图。');
+      notify('snapshotError');
     }
   }
 
@@ -718,43 +861,25 @@
   });
   $('snapshot-tool').addEventListener('click', exportSnapshot);
   $('library-button').addEventListener('click', () => $('library-input').click());
-  $('library-input').addEventListener('change', async event => {
+  $('library-input').addEventListener('change', event => {
     const files = [...event.target.files];
     event.target.value = '';
     if (!files.length) return;
-    try {
-      await readLibrary(files);
-    } catch (error) {
-      notify(error.message);
-    }
+    const folderName = files[0].webkitRelativePath?.split('/')[0] || t('scenes');
+    openSceneLibrary(() => readLibrary(files), folderName, 'errorCatalog');
   });
-  $('import-button').addEventListener('click', () => $('file-input').click());
-  $('file-input').addEventListener('change', async event => {
+  $('archive-button').addEventListener('click', () => $('archive-input').click());
+  $('archive-input').addEventListener('change', event => {
     const [file] = event.target.files;
     event.target.value = '';
-    if (!file) return;
-    const token = ++requestId;
-    showStageMessage('正在解析 ' + file.name + '…');
-    setStatus('正在解析本地文件');
-    try {
-      await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-      const cloud = await window.LidarFormats.read(file);
-      if (token !== requestId) return;
-      const duplicate = importedScenes.filter(scene => scene.cloud.name === cloud.name).length;
-      const room = cloud.name + (duplicate ? ' (' + (duplicate + 1) + ')' : '');
-      const scene = {id:'local:' + (importedScenes.length + 1), area:'Imported', room, imported:true, cloud};
-      importedScenes.push(scene);
-      $('room-search').value = '';
-      renderSceneChoices();
-      loadScene(scene);
-    } catch (error) {
-      if (token !== requestId) return;
-      showStageMessage('');
-      setStatus('导入失败');
-      notify(error.message);
-    }
+    if (file) openDataPack(file);
   });
-  renderSceneChoices();
+  $('import-button').addEventListener('click', () => $('file-input').click());
+  $('file-input').addEventListener('change', event => {
+    const [file] = event.target.files;
+    event.target.value = '';
+    if (file) importFile(file);
+  });
   const initial = catalog.scenes.find(scene => scene.id === catalog.defaultScene) || catalog.scenes[0];
   if (initial) loadScene(initial);
 })();

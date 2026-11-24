@@ -1,9 +1,11 @@
 (function () {
   'use strict';
 
-  const maxBytes = 384 * 1024 * 1024;
   const maxRenderedPoints = 500000;
   const maxHeaderBytes = 128 * 1024;
+  const textChunkBytes = 512 * 1024;
+  const binaryChunkBytes = 1024 * 1024;
+  const seekThresholdBytes = 384 * 1024 * 1024;
   const fallbackColor = [168, 192, 212];
   const asciiDecoder = new TextDecoder('windows-1252');
   const floatBits = new DataView(new ArrayBuffer(4));
@@ -70,12 +72,13 @@
         colors[offset + 2] = withColor ? clampColor(blue * scale) : fallbackColor[2];
         labels[index] = withLabel ? label : 255;
       },
-      result(name) {
+      result(name, declaredCount) {
         if (!pointCount) throw new Error('没有找到有效的三维点。请检查文件是否含有数值型 X、Y、Z 坐标。');
         const sampleCount = Math.min(pointCount, maxRenderedPoints);
         return {
           positions: positions.slice(0, sampleCount * 3), colors: colors.slice(0, sampleCount * 3),
-          labels: labels.slice(0, sampleCount), pointCount, sampleCount, name, hasColor, hasLabels
+          labels: labels.slice(0, sampleCount), pointCount: declaredCount ?? pointCount,
+          sampleCount, name, hasColor, hasLabels
         };
       }
     };
@@ -138,66 +141,113 @@
     throw new Error('点云文件头不完整或过长，请检查文件是否已完整下载。');
   }
 
-  async function* textLines(blob) {
-    const decoder = new TextDecoder('utf-8');
-    const reader = blob.stream().getReader();
+  const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  async function scanText(file, offset, progress, consume) {
+    const decoder = new TextDecoder();
     let tail = '';
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const chunk = tail + decoder.decode(value, { stream: true });
-        let start = 0;
-        let next = chunk.indexOf('\n');
-        while (next >= 0) {
-          yield chunk.slice(start, next).trim();
-          start = next + 1;
-          next = chunk.indexOf('\n', start);
-        }
-        tail = chunk.slice(start);
-        if (tail.length > maxHeaderBytes) throw new Error('文本存在过长的记录。请检查点是否逐行保存。');
+    let frameStart = performance.now();
+    for (let first = offset; first < file.size; first += textChunkBytes) {
+      const end = Math.min(first + textChunkBytes, file.size);
+      const bytes = await file.slice(first, end).arrayBuffer();
+      const chunk = tail + decoder.decode(bytes, { stream: end < file.size });
+      let start = 0;
+      for (let next = chunk.indexOf('\n'); next >= 0; next = chunk.indexOf('\n', start)) {
+        if (next - start > maxHeaderBytes) throw new Error('文本存在过长的记录。请检查点是否逐行保存。');
+        if (consume(chunk.slice(start, next).trim()) === false) return;
+        start = next + 1;
       }
-      tail += decoder.decode();
-      if (tail) yield tail.trim();
-    } finally {
-      await reader.cancel();
-      reader.releaseLock();
+      tail = chunk.slice(start);
+      if (tail.length > maxHeaderBytes) throw new Error('文本存在过长的记录。请检查点是否逐行保存。');
+      progress(end / file.size);
+      if (performance.now() - frameStart >= 25) {
+        await yieldToBrowser();
+        frameStart = performance.now();
+      }
     }
+    if (tail) consume(tail.trim());
   }
 
   function toWords(line) {
     return line.split(/\s+/);
   }
 
-  async function asciiVertices(file, offset, count, skip, consume) {
+  async function asciiVertices(file, offset, count, skip, consume, progress) {
     let read = 0;
     if (!count) return;
-    for await (const line of textLines(file.slice(offset))) {
-      if (!line || line.startsWith('#')) continue;
+    await scanText(file, offset, progress, line => {
+      if (!line || line.startsWith('#')) return;
       if (skip) {
         skip--;
-        continue;
+        return;
       }
       consume(toWords(line));
-      if (++read >= count) break;
-    }
+      return ++read < count;
+    });
     if (read < count) throw new Error('点云数据行少于文件头声明的数量，文件可能未下载完整。');
   }
 
-  async function binaryVertices(file, offset, stride, count, consume) {
-    if (!stride || !Number.isSafeInteger(stride * count) || offset + stride * count > file.size) {
+  async function binaryVertices(file, offset, stride, count, fields, collector, { little, packed, progress }) {
+    const end = offset + stride * count;
+    if (!stride || !Number.isSafeInteger(end) || end > file.size) {
       throw new Error('二进制点云数据短于文件头声明的大小，文件可能未下载完整。');
     }
-    const rowsPerChunk = Math.max(1, Math.floor(1024 * 1024 / stride));
-    for (let first = 0; first < count; first += rowsPerChunk) {
-      const batch = Math.min(rowsPerChunk, count - first);
-      const start = offset + first * stride;
-      const view = new DataView(await file.slice(start, start + batch * stride).arrayBuffer());
-      for (let row = 0; row < batch; row++) consume(view, row * stride);
+    function consume(getValue) {
+      addPoint(collector, fields, field => field && getValue(field, field.reader),
+        packed ? field => field.size === 4 ? getValue(field, 'getUint32') : undefined : undefined);
     }
+
+    async function visit(first, length, advanced) {
+      const rowsPerChunk = Math.max(1, Math.floor(binaryChunkBytes / stride));
+      const fieldList = stride > binaryChunkBytes
+        ? [...fields.xyz, ...fields.rgb, fields.label, packed && fields.packed].filter(Boolean)
+        : null;
+      let frameStart = performance.now();
+      for (let consumed = 0; consumed < length;) {
+        const batch = Math.min(rowsPerChunk, length - consumed);
+        const start = offset + (first + consumed) * stride;
+        if (fieldList) {
+          // Files with unusually wide records can still read only the fields we display.
+          const views = await Promise.all(fieldList.map(async field => {
+            const position = start + field.offset;
+            return new DataView(await file.slice(position, position + field.size).arrayBuffer());
+          }));
+          consume((field, method) => views[fieldList.indexOf(field)][method](0, little));
+        } else {
+          const view = new DataView(await file.slice(start, start + batch * stride).arrayBuffer());
+          for (let row = 0; row < batch; row++) {
+            consume((field, method) => view[method](row * stride + field.offset, little));
+          }
+        }
+        consumed += batch;
+        advanced(consumed);
+        if (performance.now() - frameStart >= 25) {
+          await yieldToBrowser();
+          frameStart = performance.now();
+        }
+      }
+    }
+
+    if (stride * count <= seekThresholdBytes || count <= maxRenderedPoints) {
+      await visit(0, count, consumed => progress(consumed / count));
+      return;
+    }
+
+    // Read contiguous windows distributed across the entire file to limit both I/O and memory.
+    const windows = 1024;
+    for (let window = 0; window < windows; window++) {
+      const firstSample = Math.floor(window * maxRenderedPoints / windows);
+      const nextSample = Math.floor((window + 1) * maxRenderedPoints / windows);
+      const firstRow = Math.floor(count * (firstSample / maxRenderedPoints));
+      const nextRow = Math.floor(count * (nextSample / maxRenderedPoints));
+      const length = nextSample - firstSample;
+      const first = firstRow + Math.max(0, Math.floor((nextRow - firstRow - length) / 2));
+      await visit(first, length, consumed => progress((firstSample + consumed) / maxRenderedPoints));
+    }
+    return count;
   }
 
-  async function ply(file, collector) {
+  async function ply(file, collector, progress) {
     const header = await readHeader(file, line => line.toLowerCase() === 'end_header');
     if (header.lines[0]?.toLowerCase() !== 'ply') throw new Error('文件不含有效的 PLY 文件头。');
     let format;
@@ -232,7 +282,7 @@
       const skip = prefix.reduce((total, item) => total + item.count, 0);
       await asciiVertices(file, header.offset, vertex.count, skip, words => {
         addPoint(collector, fields, field => numeric(words[field?.index]));
-      });
+      }, progress);
       return;
     }
     if (format !== 'binary_little_endian' && format !== 'binary_big_endian') {
@@ -243,9 +293,7 @@
     }
     const little = format === 'binary_little_endian';
     const offset = prefix.reduce((total, item) => total + item.count * item.stride, header.offset);
-    await binaryVertices(file, offset, vertex.stride, vertex.count, (view, row) => {
-      addPoint(collector, fields, field => field && view[field.reader](row + field.offset, little));
-    });
+    return binaryVertices(file, offset, vertex.stride, vertex.count, fields, collector, { little, packed: false, progress });
   }
 
   function pcdScalar(type, size) {
@@ -265,7 +313,7 @@
     return value >>> 0;
   }
 
-  async function pcd(file, collector) {
+  async function pcd(file, collector, progress) {
     const header = await readHeader(file, line => /^data\s/i.test(line));
     const meta = new Map();
     for (const line of header.lines) {
@@ -303,14 +351,11 @@
       await asciiVertices(file, header.offset, count, 0, words => {
         addPoint(collector, fields, field => numeric(words[field?.index]),
           field => field.size === 4 ? asciiPacked(numeric(words[field.index]), field) : undefined);
-      });
+      }, progress);
       return;
     }
     if (data !== 'binary') throw new Error('无法识别此 PCD 编码。请导出 ASCII 或普通二进制 PCD。');
-    await binaryVertices(file, header.offset, stride, count, (view, row) => {
-      addPoint(collector, fields, field => field && view[field.reader](row + field.offset, true),
-        field => field.size === 4 ? view.getUint32(row + field.offset, true) : undefined);
-    });
+    return binaryVertices(file, header.offset, stride, count, fields, collector, { little: true, packed: true, progress });
   }
 
   function textColumns(line) {
@@ -318,41 +363,49 @@
     return delimiter ? line.split(delimiter).map(value => value.trim().replace(/^"(.*)"$/, '$1')) : toWords(line);
   }
 
-  async function textCloud(file, collector) {
+  async function textCloud(file, collector, progress) {
     let fields;
     let firstRow = true;
-    for await (const line of textLines(file)) {
-      if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    await scanText(file, 0, progress, line => {
+      if (!line || line.startsWith('#') || line.startsWith('//')) return;
       const columns = textColumns(line);
-      if (columns.length < 3) continue;
+      if (columns.length < 3) return;
       if (firstRow) {
         firstRow = false;
         const names = columns.map((name, index) => ({ name: name.toLowerCase(), index }));
         if (xyzNames.every(aliases => matchField(names, aliases))) {
           fields = cloudFields(names);
-          continue;
+          return;
         }
       }
       if (fields) {
         addPoint(collector, fields, field => numeric(columns[field?.index]));
-        continue;
+        return;
       }
       const colored = columns.length >= 6;
       collector.add(numeric(columns[0]), numeric(columns[1]), numeric(columns[2]),
         colored ? numeric(columns[3]) : NaN, colored ? numeric(columns[4]) : NaN,
         colored ? numeric(columns[5]) : NaN, numeric(columns[6]));
-    }
+    });
   }
 
-  async function read(file) {
+  async function read(file, { onProgress } = {}) {
     if (!file?.name || !file.size) throw new Error('请选择一个非空点云文件。');
-    if (file.size > maxBytes) throw new Error('单个导入文件最大为 384 MB。请先将点云分块或采样后再导入。');
     const extension = file.name.split('.').pop().toLowerCase();
     const readers = { ply, pcd, xyz: textCloud, txt: textCloud, csv: textCloud };
     if (!Object.hasOwn(readers, extension)) throw new Error('支持 PLY、PCD、XYZ、TXT 和 CSV 点云文件。请先解压数据或转换格式。');
     const collector = collect();
-    await readers[extension](file, collector);
-    return collector.result(file.name);
+    onProgress?.(0);
+    let lastProgress = 0;
+    const declaredCount = await readers[extension](file, collector, fraction => {
+      const value = Math.min(fraction, 0.999);
+      if (!onProgress || value - lastProgress < 0.002) return;
+      lastProgress = value;
+      onProgress(value);
+    });
+    const result = collector.result(file.name, declaredCount);
+    onProgress?.(1);
+    return result;
   }
 
   window.LidarFormats = { read };

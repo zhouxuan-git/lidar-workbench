@@ -398,8 +398,7 @@
       });
     }
 
-    function fitCamera() {
-      if (!cloud) return;
+    function fittedSize() {
       const aspect = canvas.width / canvas.height;
       const { right, up, back } = cameraAxes(camera.azimuth, camera.elevation);
       const [halfX, halfY, halfZ] = cloud.bounds;
@@ -416,19 +415,58 @@
           }
         }
       }
+      return { distance: camera.orthographic ? cloud.radius * 3 : distance, halfHeight };
+    }
+
+    function fitCamera() {
+      if (!cloud) return;
+      const { distance, halfHeight } = fittedSize();
       camera.target = [0, 0, 0];
       camera.halfHeight = halfHeight;
-      camera.distance = camera.orthographic ? cloud.radius * 3 : distance;
+      camera.distance = distance;
       camera.fitted = true;
     }
 
-    function setView(name) {
+    function getCamera() {
+      if (!cloud) return null;
+      const { azimuth, elevation, orthographic, name, fitted } = camera;
+      const size = fittedSize();
+      return {
+        azimuth,
+        elevation,
+        orthographic,
+        name,
+        fitted,
+        target: camera.target.map((component) => component / cloud.radius),
+        zoom: orthographic ? camera.halfHeight / size.halfHeight : camera.distance / size.distance,
+      };
+    }
+
+    function applyCamera(state) {
+      if (!cloud || !state || disposed) return;
+      const previousName = camera.name;
+      const { azimuth, elevation, orthographic, name, fitted, target, zoom } = state;
+      Object.assign(camera, { azimuth, elevation, orthographic, name, fitted });
+      const size = fittedSize();
+      camera.target = target.map((component) => component * cloud.radius);
+      camera.distance = orthographic ? size.distance : size.distance * zoom;
+      camera.halfHeight = orthographic ? size.halfHeight * zoom : size.halfHeight;
+      if (previousName !== name) callbacks.onViewChange?.(name);
+      invalidate();
+    }
+
+    function notifyCamera() {
+      if (cloud) callbacks.onCameraChange?.(getCamera());
+    }
+
+    function setView(name, notify = true) {
       const preset = CAMERA_PRESETS[name];
       if (!preset) return;
       Object.assign(camera, preset, { name });
       fitCamera();
       callbacks.onViewChange?.(name);
       invalidate();
+      if (notify) notifyCamera();
     }
 
     function resize() {
@@ -565,6 +603,7 @@
       }
       pointer.x = event.clientX;
       pointer.y = event.clientY;
+      notifyCamera();
     });
 
     listen(canvas, 'pointerup', (event) => {
@@ -580,6 +619,7 @@
       event.preventDefault();
       const scale = event.deltaMode === 1 ? 15 : event.deltaMode === 2 ? 240 : 1;
       zoom(Math.exp(clamp(event.deltaY * scale, -220, 220) * 0.0024));
+      notifyCamera();
     }, { passive: false });
 
     listen(canvas, 'keydown', (event) => {
@@ -589,12 +629,15 @@
         event.preventDefault();
         if (event.shiftKey) pan(...delta);
         else orbit(...delta);
+        notifyCamera();
       } else if (event.key === '+' || event.key === '=') {
         event.preventDefault();
         zoom(0.84);
+        notifyCamera();
       } else if (event.key === '-') {
         event.preventDefault();
         zoom(1.19);
+        notifyCamera();
       } else if (event.key === '0') {
         event.preventDefault();
         setView('iso');
@@ -622,7 +665,7 @@
         measurement = null;
         uploadCloud();
         updateMeasurement();
-        setView('iso');
+        setView('iso', false);
       },
       setClassColors(colors) {
         palette = colors.map(parseHexColor);
@@ -637,7 +680,9 @@
       setClassFilter(value) { filter = Number.isInteger(value) ? value : null; invalidate(); },
       setPointSize(value) { if (Number.isFinite(value)) pointSize = clamp(value, 1, 14); invalidate(); },
       setClip(value) { clip = Number.isFinite(value) ? value : null; invalidate(); },
-      setView,
+      setView(name) { setView(name); },
+      getCamera,
+      applyCamera,
       setMeasurement(value) { measurement = value; updateMeasurement(); invalidate(); },
       home() { setView('iso'); },
       capture() { draw(); return canvas.toDataURL('image/png'); },

@@ -9,11 +9,12 @@
   const number = new Intl.NumberFormat('zh-CN');
   const roomOrder = new Intl.Collator('en', {numeric: true});
   const roomLabels = {office: '办公室', conferenceRoom: '会议室', hallway: '走廊', copyRoom: '复印室', storage: '储藏室', pantry: '茶水间', lobby: '大厅', lounge: '休息区', openspace: '开放空间', WC: '卫生间', auditorium: '报告厅'};
-  const areaLabel = area => area === 'Demo' ? '演示' : area.replace('_', ' ');
+  const areaLabel = area => ({Demo:'演示', Imported:'本地导入'})[area] || area.replace('_', ' ');
   const pointSize = $('point-size');
   const requests = new Map();
-  const demoScene = { id:'demo/office', area:'Demo', room:'office_1', demo:true };
-  let catalog = window.LidarData || {scenes:[demoScene], defaultScene:demoScene.id};
+  const demos = window.LidarDemos;
+  const importedScenes = [];
+  let catalog = window.LidarData || demos;
   let libraryFiles = null;
   let area = null;
   let selectedId = null;
@@ -26,6 +27,13 @@
   let selection = null;
   let toastTimer;
   let viewer;
+  let compareViewer;
+  let comparison = null;
+  let compareChoice = catalog.compareScene || '';
+  let compareRequestId = 0;
+  let compareOpen = true;
+  let syncEnabled = true;
+  let compareMode = catalog === demos ? 'semantic' : 'rgb';
 
   window.LidarRegister = (id, encoded) => {
     const request = requests.get(id);
@@ -40,6 +48,7 @@
     viewer = window.LidarViewer.create($('viewport'), {
       onPick: pickPoint,
       onViewChange: name => setPressed($('orientations'), 'view', name),
+      onCameraChange: camera => { if (camerasLinked()) compareViewer.applyCamera(camera); },
     });
     viewer.setClassColors(classColors);
     viewer.setPointSize(Number(pointSize.value));
@@ -52,6 +61,7 @@
   }
 
   function roomName(scene) {
+    if (scene.imported) return scene.room;
     const match = /^(.*)_(\d+)$/.exec(scene.room);
     if (match && roomLabels[match[1]]) return roomLabels[match[1]] + ' ' + match[2];
     return scene.room;
@@ -84,6 +94,20 @@
     $('load-status').textContent = message;
   }
 
+  function allScenes() {
+    return [...catalog.scenes, ...importedScenes];
+  }
+
+  function sceneSource(scene) {
+    if (scene.demo) return '合成演示';
+    if (scene.imported) return '本地文件';
+    return scene.id.replace('_', ' ');
+  }
+
+  function sceneUnits(scene, suffix = ' m') {
+    return scene.imported ? '' : suffix;
+  }
+
   function makeRoomIcon() {
     const ns = 'http://www.w3.org/2000/svg';
     const icon = document.createElementNS(ns, 'svg');
@@ -96,14 +120,16 @@
   }
 
   function renderLibrary(scrollSelected = false) {
-    const areas = [...new Set(catalog.scenes.map(scene => scene.area))];
-    const scenes = catalog.scenes.filter(scene => scene.area === area);
+    const entries = allScenes();
+    const areas = [...new Set(entries.map(scene => scene.area))];
+    const scenes = entries.filter(scene => scene.area === area);
     const search = $('room-search').value.trim().toLowerCase();
     const matches = scenes
       .filter(scene => (scene.room + ' ' + roomName(scene)).toLowerCase().includes(search))
       .sort((a, b) => roomOrder.compare(a.room, b.room));
-    $('dataset-name').textContent = catalog === demoCatalog ? '演示场景' : 'S3DIS';
-    $('dataset-summary').textContent = catalog === demoCatalog ? '合成点云' : areas.length + ' 个区域 · ' + catalog.scenes.length + ' 个房间';
+    const catalogAreaCount = new Set(catalog.scenes.map(scene => scene.area)).size;
+    $('dataset-name').textContent = catalog === demos ? '演示场景' : 'S3DIS';
+    $('dataset-summary').textContent = catalog === demos ? catalog.scenes.length + ' 个合成场景' : catalogAreaCount + ' 个区域 · ' + catalog.scenes.length + ' 个房间';
     $('areas').replaceChildren(...areas.map(item => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -113,7 +139,7 @@
         if (area === item) return;
         area = item;
         $('room-search').value = '';
-        const first = catalog.scenes.find(scene => scene.area === area);
+        const first = entries.find(scene => scene.area === area);
         if (first) loadScene(first);
         else renderLibrary();
       });
@@ -200,49 +226,10 @@
     return {positions, colors, labels, hasColor:true, hasLabels:true, pointCount:scene.pointCount, sampleCount:count};
   }
 
-  function makeDemo() {
-    const points = [], colors = [], labels = [];
-    let seed = 16900;
-    function random() {
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-      return seed / 4294967296;
-    }
-    function surface(min, max, label, count, rgb) {
-      for (let index = 0; index < count; index++) {
-        for (let axis = 0; axis < 3; axis++) {
-          points.push(min[axis] + random() * (max[axis] - min[axis]) + (random() - .5) * .015);
-          colors.push(rgb[axis] + Math.floor(random() * 24) - 12);
-        }
-        labels.push(label);
-      }
-    }
-    function box(min, max, classId, count, rgb) {
-      for (let axis = 0; axis < 3; axis++) {
-        for (const end of [min[axis], max[axis]]) {
-          const left = min.slice(), right = max.slice();
-          left[axis] = end;
-          right[axis] = end;
-          surface(left, right, classId, count, rgb);
-        }
-      }
-    }
-    surface([-4,-2.9,0], [4,2.9,0], 1, 6100, [119,130,129]);
-    surface([-4,-2.9,0], [4,-2.9,2.9], 2, 3400, [185,181,172]);
-    surface([-4,-2.9,0], [-4,2.9,2.9], 2, 2750, [185,181,172]);
-    surface([-3.1,-2.87,.97], [-.44,-2.87,2.27], 5, 1300, [115,164,188]);
-    surface([2.36,-2.85,.05], [3.68,-2.85,2.23], 6, 900, [157,121,93]);
-    box([-2.45,-1.17,.71], [1.96,.46,.82], 7, 650, [168,129,90]);
-    for (const x of [-2.29, 1.79]) {
-      for (const y of [-1.05, .34]) box([x,y,0], [x+.1,y+.1,.73], 7, 66, [89,97,101]);
-    }
-    for (const x of [-1.87, -.43, 1.13]) {
-      box([x,-1.96,.39], [x+.57,-1.45,.48], 8, 175, [111,122,145]);
-      box([x,-2.03,.46], [x+.57,-1.96,.92], 8, 125, [111,122,145]);
-      box([x,.68,.39], [x+.57,1.23,.48], 8, 175, [111,122,145]);
-      box([x,1.22,.46], [x+.57,1.29,.92], 8, 125, [111,122,145]);
-    }
-    box([-3.85,.76,.05], [-3.38,2.52,1.56], 10, 390, [149,120,99]);
-    return {positions:new Float32Array(points), colors:new Uint8Array(colors), labels:new Uint8Array(labels), hasColor:true, hasLabels:true, pointCount:labels.length, sampleCount:labels.length};
+  async function readCloud(scene) {
+    if (scene.imported) return scene.cloud;
+    if (scene.demo) return demos.make(scene.id);
+    return decodeScene(scene, await (libraryFiles ? readSelectedScene(scene) : readSceneScript(scene)));
   }
 
   function computeBounds(positions) {
@@ -261,16 +248,18 @@
     const token = ++requestId;
     selectedId = scene.id;
     area = scene.area;
+    $('primary-scene').value = selectedId;
     renderLibrary(true);
     showStageMessage('正在读取 ' + roomName(scene) + '…');
     setStatus('正在读取点云');
     try {
-      const cloud = scene.demo ? makeDemo() : decodeScene(scene, await (libraryFiles ? readSelectedScene(scene) : readSceneScript(scene)));
+      const cloud = await readCloud(scene);
       if (token !== requestId) return;
-      showCloud(cloud, {scene, builtIn:true});
+      showCloud(cloud, {scene, builtIn:!scene.imported});
     } catch (error) {
       if (token !== requestId) return;
       selectedId = active?.scene?.id || null;
+      $('primary-scene').value = selectedId || '';
       renderLibrary(true);
       showStageMessage(error.message);
       setStatus('读取失败');
@@ -287,18 +276,17 @@
     classFilter = null;
     selection = null;
     tool = 'inspect';
-    clip = Boolean(scene && !scene.demo);
+    clip = !scene.imported && !scene.demo;
     $('clip-range').value = clip ? '880' : '1000';
-    $('scene-path').textContent = scene ? (scene.demo ? '合成点云 · 演示场景' : 'S3DIS / ' + areaLabel(scene.area)) : '本地导入';
-    $('scene-name').textContent = scene ? roomName(scene) : cloud.name;
-    $('stage-source').textContent = scene ? (scene.demo ? '合成演示' : scene.id.replace('_', ' ')) : '本地文件';
+    $('scene-path').textContent = scene.imported ? '本地导入' : (scene.demo ? '合成点云 · 演示场景' : 'S3DIS / ' + areaLabel(scene.area));
+    $('scene-name').textContent = roomName(scene);
+    $('stage-source').textContent = sceneSource(scene);
     $('raw-count').textContent = number.format(cloud.pointCount);
-    $('scene-size').textContent = bounds.max.map((value, index) => (value - bounds.min[index]).toFixed(2)).join(' × ') + (scene ? ' m' : '');
-    $('scene-size').title = scene ? '采样点的 X × Y × Z 尺寸，米' : '采样点的 X × Y × Z 尺寸，原坐标单位';
+    $('scene-size').textContent = bounds.max.map((value, index) => (value - bounds.min[index]).toFixed(2)).join(' × ') + sceneUnits(scene);
+    $('scene-size').title = scene.imported ? '采样点的 X × Y × Z 尺寸，原坐标单位' : '采样点的 X × Y × Z 尺寸，米';
     $('height-low').textContent = '0';
-    $('height-high').textContent = (bounds.max[2] - bounds.min[2]).toFixed(2) + (scene ? ' m' : '');
-    $('modes').querySelector('[data-mode="rgb"]').disabled = !cloud.hasColor;
-    $('modes').querySelector('[data-mode="semantic"]').disabled = !cloud.hasLabels;
+    $('height-high').textContent = (bounds.max[2] - bounds.min[2]).toFixed(2) + sceneUnits(scene);
+    setAvailableModes($('modes'), cloud);
     viewer.setClassFilter(null);
     viewer.setMeasurement(null);
     viewer.setCloud(cloud);
@@ -311,6 +299,12 @@
     updateTool();
     showStageMessage('');
     setStatus(scene?.demo ? '合成演示数据' : (cloud.sampleCount < cloud.pointCount ? '按房间采样显示' : '数据已就绪'));
+    updateComparison();
+  }
+
+  function setAvailableModes(buttons, cloud) {
+    buttons.querySelector('[data-mode="rgb"]').disabled = !cloud.hasColor;
+    buttons.querySelector('[data-mode="semantic"]').disabled = !cloud.hasLabels;
   }
 
   function setColorMode(mode) {
@@ -318,6 +312,101 @@
     viewer.setColorMode(mode);
     setPressed($('modes'), 'mode', mode);
     $('height-legend').hidden = mode !== 'height';
+  }
+
+  function camerasLinked() {
+    return compareOpen && syncEnabled && comparison !== null;
+  }
+
+  function matchLeftCamera() {
+    if (camerasLinked()) compareViewer.applyCamera(viewer.getCamera());
+  }
+
+  function setCompareOpen(open) {
+    compareOpen = open;
+    $('compare-toggle').setAttribute('aria-pressed', String(open));
+    $('viewports').classList.toggle('is-comparing', open);
+    $('compare-panel').hidden = !open;
+    $('sync-toggle').hidden = !open;
+    $('primary-label').hidden = !open;
+    $('inspector-title').textContent = open ? '左侧数据检查' : '数据检查';
+    if (open) {
+      updateComparison();
+      requestAnimationFrame(matchLeftCamera);
+    } else {
+      compareRequestId++;
+    }
+  }
+
+  function renderSceneChoices() {
+    const groups = new Map();
+    const entries = allScenes();
+    for (const scene of entries) {
+      if (!groups.has(scene.area)) {
+        const group = document.createElement('optgroup');
+        group.label = areaLabel(scene.area);
+        groups.set(scene.area, group);
+      }
+      groups.get(scene.area).append(new Option(roomName(scene), scene.id));
+    }
+    if (!entries.some(scene => scene.id === compareChoice)) compareChoice = '';
+    $('primary-scene').replaceChildren(...[...groups.values()].map(group => group.cloneNode(true)));
+    $('primary-scene').value = selectedId || catalog.defaultScene;
+    $('compare-scene').replaceChildren(new Option('同左侧', ''), ...groups.values());
+    $('compare-scene').value = compareChoice;
+  }
+
+  function compareMessage(message) {
+    $('compare-message').textContent = message;
+    $('compare-message').hidden = !message;
+  }
+
+  function setComparisonMode(mode) {
+    if (!comparison) return;
+    const cloud = comparison.cloud;
+    const available = mode === 'height' || (mode === 'rgb' && cloud.hasColor) || (mode === 'semantic' && cloud.hasLabels);
+    const selectedMode = available ? mode : (cloud.hasColor ? 'rgb' : (cloud.hasLabels ? 'semantic' : 'height'));
+    compareViewer.setColorMode(selectedMode);
+    setPressed($('compare-modes'), 'mode', selectedMode);
+    $('compare-height-legend').hidden = selectedMode !== 'height';
+  }
+
+  async function updateComparison() {
+    if (!compareOpen || !active) return;
+    const token = ++compareRequestId;
+    const target = allScenes().find(scene => scene.id === compareChoice) || active.scene;
+    if (comparison?.scene === target) {
+      compareMessage('');
+      updateCompareClip();
+      matchLeftCamera();
+      return;
+    }
+    compareMessage('正在读取 ' + roomName(target) + '…');
+    try {
+      const cloud = target === active.scene ? active.cloud : await readCloud(target);
+      if (token !== compareRequestId) return;
+      if (!compareViewer) {
+        compareViewer = window.LidarViewer.create($('compare-viewport'), {
+          onViewChange: name => setPressed($('compare-orientations'), 'view', name),
+          onCameraChange: camera => { if (camerasLinked()) viewer.applyCamera(camera); },
+        });
+        compareViewer.setClassColors(classColors);
+        compareViewer.setPointSize(Number(pointSize.value));
+      }
+      const bounds = target === active.scene ? active.bounds : computeBounds(cloud.positions);
+      compareViewer.setCloud(cloud);
+      comparison = {scene:target, cloud, bounds};
+      $('compare-source').textContent = target.demo ? '合成 · ' + roomName(target) : sceneSource(target);
+      $('compare-height-high').textContent = (bounds.max[2] - bounds.min[2]).toFixed(2) + sceneUnits(target);
+      setAvailableModes($('compare-modes'), cloud);
+      setComparisonMode(compareMode);
+      updateCompareClip();
+      matchLeftCamera();
+      compareMessage('');
+    } catch (error) {
+      if (token !== compareRequestId) return;
+      compareMessage(error.message || '无法读取右侧点云。');
+    }
   }
 
   function renderClasses() {
@@ -366,49 +455,65 @@
     updateRenderCount();
   }
 
-  function currentCut() {
-    if (!active || !clip) return null;
-    const {min,max} = active.bounds;
+  function currentCut(bounds) {
+    if (!bounds || !clip) return null;
+    const {min,max} = bounds;
     return min[2] + (max[2] - min[2]) * (Number($('clip-range').value) / 1000);
   }
 
-  function updateRenderCount() {
-    if (!active) return;
-    const {positions,labels} = active.cloud;
-    const cut = currentCut();
+  function countVisible(cloud, cut, filter = null) {
+    const {positions,labels} = cloud;
     let count = labels.length;
-    if (cut !== null || classFilter !== null) {
+    if (cut !== null || filter !== null) {
       count = 0;
       for (let index = 0; index < labels.length; index++) {
-        if (classFilter !== null && labels[index] !== classFilter) continue;
+        if (filter !== null && labels[index] !== filter) continue;
         if (cut !== null && positions[index * 3 + 2] > cut) continue;
         count++;
       }
     }
+    return count;
+  }
+
+  function updateRenderCount() {
+    if (!active) return;
+    const count = countVisible(active.cloud, currentCut(active.bounds), classFilter);
     $('render-count').textContent = number.format(count);
     $('render-count').title = number.format(active.cloud.sampleCount) + ' 个采样点，当前显示 ' + number.format(count) + ' 个';
   }
 
   function updateClip() {
     if (!active) return;
-    const cut = currentCut();
+    const cut = currentCut(active.bounds);
     viewer.setClip(cut);
     $('clip-options').hidden = cut === null;
     $('clip-tool').setAttribute('aria-pressed', String(cut !== null));
     $('stage-clip').hidden = cut === null;
     if (cut !== null) {
-      const height = (cut - active.bounds.min[2]).toFixed(2) + (active.scene ? ' m' : '');
+      const height = (cut - active.bounds.min[2]).toFixed(2) + sceneUnits(active.scene);
       $('clip-value').textContent = height;
       $('stage-clip').textContent = '剖切 ≤ ' + height;
     }
     updateRenderCount();
+    updateCompareClip();
+  }
+
+  function updateCompareClip() {
+    if (!compareOpen || !comparison) return;
+    const {bounds, cloud, scene} = comparison;
+    const cut = currentCut(bounds);
+    compareViewer.setClip(cut);
+    $('compare-clip').hidden = cut === null;
+    if (cut !== null) $('compare-clip').textContent = '≤ ' + (cut - bounds.min[2]).toFixed(2) + sceneUnits(scene);
+    $('compare-count').textContent = number.format(countVisible(cloud, cut)) + ' 点';
   }
 
   function updateTool() {
     $('inspect-tool').setAttribute('aria-pressed', String(tool === 'inspect'));
     $('measure-tool').setAttribute('aria-pressed', String(tool === 'measure'));
     $('selection-title').textContent = tool === 'measure' ? '测距结果' : '拾取结果';
-    $('hint').textContent = tool === 'measure' ? '依次点击两个点测量直线距离' : '拖拽旋转 · 滚轮缩放 · Shift 拖拽平移';
+    const touch = matchMedia('(pointer: coarse)').matches;
+    $('hint').textContent = tool === 'measure' ? '在左侧依次点击两个点测距' : (touch ? '单指旋转 · 双指缩放和平移' : '拖拽旋转 · 滚轮缩放 · Shift 拖拽平移');
   }
 
   function asArray(point) {
@@ -457,7 +562,7 @@
       if (selection.end) {
         const {start,end} = selection;
         line('终点', asArray(end).map(value => value.toFixed(2)).join(', '));
-        line('直线距离', Math.hypot(start.x-end.x, start.y-end.y, start.z-end.z).toFixed(3) + (active.scene ? ' m' : ' 坐标单位'));
+        line('直线距离', Math.hypot(start.x-end.x, start.y-end.y, start.z-end.z).toFixed(3) + (active.scene.imported ? ' 坐标单位' : ' m'));
       } else line('终点', '请点击第二个点');
     }
     target.append(result);
@@ -496,11 +601,67 @@
     }
     libraryFiles = items;
     catalog = incoming;
+    compareChoice = '';
+    renderSceneChoices();
     $('room-search').value = '';
     await loadScene(catalog.scenes.find(scene => scene.id === catalog.defaultScene) || catalog.scenes[0]);
   }
 
-  const demoCatalog = window.LidarData ? null : catalog;
+  function loadSnapshot(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = dataUrl;
+    });
+  }
+
+  function fillSnapshot(context, x, y, width, height) {
+    const gradient = context.createRadialGradient(x + width / 2, y + height / 3, 0, x + width / 2, y + height / 2, Math.max(width, height) * .68);
+    gradient.addColorStop(0, '#213849');
+    gradient.addColorStop(1, '#0a151f');
+    context.fillStyle = gradient;
+    context.fillRect(x, y, width, height);
+  }
+
+  async function exportSnapshot() {
+    if (!active) return;
+    try {
+      const frames = [{name:roomName(active.scene), image:loadSnapshot(viewer.capture())}];
+      const includeComparison = compareOpen && comparison;
+      if (includeComparison) frames.push({name:roomName(comparison.scene), image:loadSnapshot(compareViewer.capture())});
+      const images = await Promise.all(frames.map(frame => frame.image));
+      const gap = includeComparison ? 8 : 0;
+      const heading = includeComparison ? 36 : 0;
+      const canvas = document.createElement('canvas');
+      canvas.width = images.reduce((width, image) => width + image.naturalWidth, 0) + gap;
+      canvas.height = Math.max(...images.map(image => image.naturalHeight)) + heading;
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#111d29';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      let offset = 0;
+      images.forEach((image, index) => {
+        fillSnapshot(context, offset, heading, image.naturalWidth, canvas.height - heading);
+        context.drawImage(image, offset, heading);
+        if (includeComparison) {
+          context.fillStyle = '#e7eef5';
+          context.font = '600 15px sans-serif';
+          context.fillText(frames[index].name, offset + 10, 23, image.naturalWidth - 20);
+        }
+        offset += image.naturalWidth + gap;
+      });
+      const link = document.createElement('a');
+      link.download = includeComparison ? 'point-cloud-comparison.png' : 'point-cloud-' + active.scene.room + '.png';
+      link.href = canvas.toDataURL('image/png');
+      document.body.append(link);
+      link.click();
+      link.remove();
+      notify(includeComparison ? '已导出左右视图。' : '已导出当前视图。');
+    } catch {
+      notify('无法生成当前视图截图。');
+    }
+  }
+
   $('modes').addEventListener('click', event => {
     const button = event.target.closest('[data-mode]');
     if (button && !button.disabled) setColorMode(button.dataset.mode);
@@ -508,6 +669,32 @@
   $('orientations').addEventListener('click', event => {
     const button = event.target.closest('[data-view]');
     if (button) viewer.setView(button.dataset.view);
+  });
+  $('compare-toggle').addEventListener('click', () => setCompareOpen(!compareOpen));
+  $('sync-toggle').addEventListener('click', () => {
+    syncEnabled = !syncEnabled;
+    $('sync-toggle').setAttribute('aria-pressed', String(syncEnabled));
+    matchLeftCamera();
+  });
+  $('primary-scene').addEventListener('change', event => {
+    const scene = allScenes().find(item => item.id === event.target.value);
+    if (!scene) return;
+    $('room-search').value = '';
+    loadScene(scene);
+  });
+  $('compare-scene').addEventListener('change', event => {
+    compareChoice = event.target.value;
+    updateComparison();
+  });
+  $('compare-modes').addEventListener('click', event => {
+    const button = event.target.closest('[data-mode]');
+    if (!button || button.disabled) return;
+    compareMode = button.dataset.mode;
+    setComparisonMode(compareMode);
+  });
+  $('compare-orientations').addEventListener('click', event => {
+    const button = event.target.closest('[data-view]');
+    if (button) compareViewer?.setView(button.dataset.view);
   });
   $('room-search').addEventListener('input', () => renderLibrary());
   $('reset-class').addEventListener('click', () => changeFilter(null));
@@ -520,40 +707,16 @@
     updateClip();
   });
   $('clip-range').addEventListener('input', updateClip);
-  $('home-tool').addEventListener('click', () => viewer.home());
+  $('home-tool').addEventListener('click', () => {
+    viewer.home();
+    if (compareOpen && !syncEnabled) compareViewer?.home();
+  });
   pointSize.addEventListener('input', () => {
     viewer.setPointSize(Number(pointSize.value));
+    compareViewer?.setPointSize(Number(pointSize.value));
     $('size-value').textContent = Number(pointSize.value).toFixed(1) + ' px';
   });
-  $('snapshot-tool').addEventListener('click', () => {
-    if (!active) return;
-    try {
-      const image = new Image();
-      image.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        const context = canvas.getContext('2d');
-        const background = context.createRadialGradient(canvas.width / 2, canvas.height / 3, 0, canvas.width / 2, canvas.height / 2, canvas.width * .68);
-        background.addColorStop(0, '#213849');
-        background.addColorStop(1, '#0a151f');
-        context.fillStyle = background;
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(image, 0, 0);
-        const link = document.createElement('a');
-        link.download = 'point-cloud-' + (active.scene?.room || 'imported') + '.png';
-        link.href = canvas.toDataURL('image/png');
-        document.body.append(link);
-        link.click();
-        link.remove();
-        notify('已导出当前视图。');
-      };
-      image.onerror = () => notify('无法生成当前视图截图。');
-      image.src = viewer.capture();
-    } catch {
-      notify('无法生成当前视图截图。');
-    }
-  });
+  $('snapshot-tool').addEventListener('click', exportSnapshot);
   $('library-button').addEventListener('click', () => $('library-input').click());
   $('library-input').addEventListener('change', async event => {
     const files = [...event.target.files];
@@ -577,9 +740,13 @@
       await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
       const cloud = await window.LidarFormats.read(file);
       if (token !== requestId) return;
-      selectedId = null;
-      renderLibrary();
-      showCloud(cloud, {builtIn:false});
+      const duplicate = importedScenes.filter(scene => scene.cloud.name === cloud.name).length;
+      const room = cloud.name + (duplicate ? ' (' + (duplicate + 1) + ')' : '');
+      const scene = {id:'local:' + (importedScenes.length + 1), area:'Imported', room, imported:true, cloud};
+      importedScenes.push(scene);
+      $('room-search').value = '';
+      renderSceneChoices();
+      loadScene(scene);
     } catch (error) {
       if (token !== requestId) return;
       showStageMessage('');
@@ -587,6 +754,7 @@
       notify(error.message);
     }
   });
+  renderSceneChoices();
   const initial = catalog.scenes.find(scene => scene.id === catalog.defaultScene) || catalog.scenes[0];
   if (initial) loadScene(initial);
 })();

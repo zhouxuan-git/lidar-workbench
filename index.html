@@ -3,14 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="浏览、测量和分析室内三维点云。">
+  <meta name="description" content="并排对比、浏览和测量室内三维点云。">
   <meta name="theme-color" content="#101720">
   <title>点云工作台</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2">
   <script defer src="data/catalog.js"></script>
+  <script defer src="demo-scenes.js"></script>
   <script defer src="formats.js"></script>
-  <script defer src="viewer.js"></script>
-  <script defer src="app.js"></script>
+  <script defer src="viewer.js?v=2"></script>
+  <script defer src="app.js?v=2"></script>
 </head>
 <body>
   <svg class="icon-bank" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -25,6 +26,8 @@
     <symbol id="i-center" viewBox="0 0 24 24"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M5 7h3l2-3h4l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="3"/></symbol>
     <symbol id="i-clear" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-2-2 2-2a3.5 3.5 0 0 1 5 5l-3 3a3.5 3.5 0 0 1-5 0m1 4-2 2a3.5 3.5 0 0 1-5-5l3-3a3.5 3.5 0 0 1 5 0"/></symbol>
   </svg>
   <header class="app-header">
     <div class="brand">
@@ -50,23 +53,56 @@
     <section class="editor" aria-label="三维视图">
       <div class="editor-header">
         <div class="scene-title"><p id="scene-path">S3DIS</p><h2 id="scene-name">正在载入</h2></div>
-        <div class="segments" id="modes" role="group" aria-label="点云着色">
-          <button type="button" data-mode="rgb" aria-pressed="false">原始颜色</button>
-          <button type="button" data-mode="semantic" aria-pressed="true">语义标签</button>
-          <button type="button" data-mode="height" aria-pressed="false">相对高度</button>
+        <div class="editor-actions">
+          <button type="button" class="tool" id="compare-toggle" aria-pressed="true" aria-controls="compare-panel"><svg class="icon"><use href="#i-compare"/></svg>双栏对比</button>
+          <button type="button" class="tool" id="sync-toggle" aria-pressed="true"><svg class="icon"><use href="#i-link"/></svg>同步视角</button>
         </div>
       </div>
-      <div class="stage" id="stage">
-        <canvas id="viewport" tabindex="0" aria-label="三维点云。方向键旋转，加减键缩放，Home 键回到初始视角。"></canvas>
-        <div class="stage-top"><span class="stage-chip" id="stage-source">S3DIS</span><span class="stage-chip" id="stage-clip" hidden></span></div>
-        <div class="orientations" id="orientations" role="group" aria-label="相机方向">
-          <button type="button" data-view="iso" aria-pressed="true">斜视</button>
-          <button type="button" data-view="top" aria-pressed="false">顶视</button>
-          <button type="button" data-view="front" aria-pressed="false">正视</button>
-          <button type="button" data-view="side" aria-pressed="false">侧视</button>
-        </div>
-        <div class="stage-message" id="stage-message" role="status" hidden></div>
-        <div class="height-legend" id="height-legend" hidden><div class="height-ramp"></div><div><span id="height-low"></span><span id="height-high"></span></div></div>
+      <div class="viewports is-comparing" id="viewports">
+        <section class="viewport-panel" aria-label="左侧视图">
+          <div class="viewport-head">
+            <label class="viewport-label" id="primary-label" for="primary-scene"><span>左侧</span><select id="primary-scene" aria-label="左侧场景"></select></label>
+            <div class="segments" id="modes" role="group" aria-label="左侧点云着色">
+              <button type="button" data-mode="rgb" aria-label="原始颜色" aria-pressed="false">原色</button>
+              <button type="button" data-mode="semantic" aria-label="语义标签" aria-pressed="true">语义</button>
+              <button type="button" data-mode="height" aria-label="相对高度" aria-pressed="false">高度</button>
+            </div>
+          </div>
+          <div class="stage" id="stage">
+            <canvas id="viewport" tabindex="0" aria-label="左侧三维点云。方向键旋转，加减键缩放，Home 键回到初始视角。"></canvas>
+            <div class="stage-top"><span class="stage-chip" id="stage-source">S3DIS</span><span class="stage-chip" id="stage-clip" hidden></span></div>
+            <div class="orientations" id="orientations" role="group" aria-label="左侧相机方向">
+              <button type="button" data-view="iso" aria-pressed="true">斜视</button>
+              <button type="button" data-view="top" aria-pressed="false">顶视</button>
+              <button type="button" data-view="front" aria-pressed="false">正视</button>
+              <button type="button" data-view="side" aria-pressed="false">侧视</button>
+            </div>
+            <div class="stage-message" id="stage-message" role="status" hidden></div>
+            <div class="height-legend" id="height-legend" hidden><div class="height-ramp"></div><div><span id="height-low"></span><span id="height-high"></span></div></div>
+          </div>
+        </section>
+        <section class="viewport-panel" id="compare-panel" aria-label="右侧视图">
+          <div class="viewport-head">
+            <label class="viewport-label" for="compare-scene"><span>右侧</span><select id="compare-scene" aria-label="右侧对照场景"><option value="">同左侧</option></select></label>
+            <div class="segments" id="compare-modes" role="group" aria-label="右侧点云着色">
+              <button type="button" data-mode="rgb" aria-label="右侧原始颜色" aria-pressed="true">原色</button>
+              <button type="button" data-mode="semantic" aria-label="右侧语义标签" aria-pressed="false">语义</button>
+              <button type="button" data-mode="height" aria-label="右侧相对高度" aria-pressed="false">高度</button>
+            </div>
+          </div>
+          <div class="stage" id="compare-stage">
+            <canvas id="compare-viewport" tabindex="0" aria-label="右侧三维点云。方向键旋转，加减键缩放，Home 键回到初始视角。"></canvas>
+            <div class="stage-top"><span class="stage-chip" id="compare-source"></span><span class="stage-chip" id="compare-clip" hidden></span><span class="stage-chip numeric" id="compare-count"></span></div>
+            <div class="orientations" id="compare-orientations" role="group" aria-label="右侧相机方向">
+              <button type="button" data-view="iso" aria-label="右侧斜视" aria-pressed="true">斜视</button>
+              <button type="button" data-view="top" aria-label="右侧顶视" aria-pressed="false">顶视</button>
+              <button type="button" data-view="front" aria-label="右侧正视" aria-pressed="false">正视</button>
+              <button type="button" data-view="side" aria-label="右侧侧视" aria-pressed="false">侧视</button>
+            </div>
+            <div class="stage-message" id="compare-message" role="status" hidden></div>
+            <div class="height-legend" id="compare-height-legend" hidden><div class="height-ramp"></div><div><span>0</span><span id="compare-height-high"></span></div></div>
+          </div>
+        </section>
       </div>
       <div class="tool-row" aria-label="视图工具">
         <div class="tool-group" role="group" aria-label="交互工具">
@@ -85,7 +121,7 @@
       <footer class="editor-footer"><span id="hint">拖拽旋转 · 滚轮缩放 · Shift 拖拽平移</span><span id="load-status" role="status"></span></footer>
     </section>
     <aside class="sidebar inspector" aria-label="数据检查">
-      <div class="panel-title"><svg class="icon"><use href="#i-target"/></svg><h2>数据检查</h2></div>
+      <div class="panel-title"><svg class="icon"><use href="#i-target"/></svg><h2 id="inspector-title">左侧数据检查</h2></div>
       <dl class="scene-stats"><div><dt>原始点数</dt><dd id="raw-count" class="numeric">—</dd></div><div><dt>渲染点数</dt><dd id="render-count" class="numeric">—</dd></div><div><dt>场景尺寸</dt><dd id="scene-size" class="numeric">—</dd></div></dl>
       <div class="scale-control"><label for="point-size">点大小</label><output id="size-value" class="numeric">2.2 px</output><input type="range" id="point-size" min="1" max="6" step="0.1" value="2.2"></div>
       <section class="class-section" aria-labelledby="classes-title">

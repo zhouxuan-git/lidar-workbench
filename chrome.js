@@ -3,7 +3,7 @@
 
   const wordmark = document.getElementById('brand-wordmark');
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const animationDuration = 2500;
+  const animationDuration = 1200;
   const restingDuration = 2500;
   let timer;
 

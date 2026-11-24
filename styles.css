@@ -49,11 +49,11 @@ button:focus-visible, input:focus-visible, canvas:focus-visible, a:focus-visible
 .brand h1 { font-size: clamp(1.18rem, 2vw, 1.64rem); line-height: 1.05; font-weight: 700; letter-spacing: -.046em; }
 .brand p { color: var(--muted); font-size: .75rem; margin-top: 4px; letter-spacing: .015em; }
 :lang(en) .brand p { display: none; }
-.wordmark { display: inline-flex; align-items: center; color: var(--text); text-decoration: none; text-transform: uppercase; white-space: nowrap; }
-.wordmark-tail { display: inline-block; max-width: 6em; overflow: hidden; transition: max-width .52s cubic-bezier(.24,.84,.27,1), opacity .21s ease, transform .52s cubic-bezier(.24,.84,.27,1); }
-.wordmark-tail:nth-child(2) { max-width: 3em; }
-.wordmark-gap { display: inline-block; width: .235em; transition: width .52s cubic-bezier(.24,.84,.27,1); }
-.wordmark[data-compact] .wordmark-tail { max-width: 0; opacity: 0; transform: translateX(-.2em); }
+.wordmark { display: inline-flex; align-items: center; color: var(--text); text-decoration: none; text-transform: uppercase; white-space: nowrap; --wordmark-easing: cubic-bezier(.42,0,.58,1); }
+.wordmark-tail { display: block; flex: none; width: var(--wordmark-tail-width, max-content); overflow: hidden; transition: width var(--wordmark-duration) var(--wordmark-easing), opacity var(--wordmark-duration) var(--wordmark-easing), transform var(--wordmark-duration) var(--wordmark-easing); }
+.wordmark-tail > span { display: block; width: max-content; }
+.wordmark-gap { display: inline-block; width: .235em; transition: width var(--wordmark-duration) var(--wordmark-easing); }
+.wordmark[data-compact] .wordmark-tail { width: 0; opacity: 0; transform: translateX(-.2em); }
 .wordmark[data-compact] .wordmark-gap { width: .14em; }
 .language-switch { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .language-switch button { min-height: 30px; min-width: 36px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); padding: 3px 6px; font-size: .82rem; }

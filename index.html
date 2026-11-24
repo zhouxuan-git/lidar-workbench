@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="浏览、测量和分析室内三维点云。">
+  <meta name="theme-color" content="#101720">
+  <title>点云工作台</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="data/catalog.js"></script>
+  <script defer src="formats.js"></script>
+  <script defer src="viewer.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <svg class="icon-bank" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 3 21 8.2v7.6L12 21l-9-5.2V8.2L12 3ZM3 8.2l9 5.2 9-5.2M12 13.4V21M7.5 5.6l9 5.2"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-add" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4.5 4.5"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 2v6m0 8v6M2 12h6m8 0h6"/></symbol>
+    <symbol id="i-ruler" viewBox="0 0 24 24"><path d="m4 15 11-11 5 5L9 20l-5-5ZM8 11l2 2m2-6 2 2"/></symbol>
+    <symbol id="i-cut" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3ZM2 12h20"/></symbol>
+    <symbol id="i-center" viewBox="0 0 24 24"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M5 7h3l2-3h4l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="3"/></symbol>
+    <symbol id="i-clear" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  </svg>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark"><svg class="icon"><use href="#i-cube"/></svg></div>
+      <div><h1>点云工作台</h1><p>LiDAR Workbench</p></div>
+    </div>
+    <div class="header-actions">
+      <button type="button" class="button quiet" id="library-button"><svg class="icon"><use href="#i-folder"/></svg>打开场景库</button>
+      <button type="button" class="button primary" id="import-button"><svg class="icon"><use href="#i-add"/></svg>导入点云</button>
+      <input id="library-input" type="file" webkitdirectory multiple hidden>
+      <input id="file-input" type="file" accept=".ply,.pcd,.xyz,.txt,.csv" hidden>
+    </div>
+  </header>
+  <main class="workbench">
+    <aside class="sidebar library" aria-label="场景库">
+      <div class="panel-title"><svg class="icon"><use href="#i-grid"/></svg><h2>场景库</h2></div>
+      <div class="dataset"><strong id="dataset-name">S3DIS</strong><span id="dataset-summary">室内三维点云</span></div>
+      <nav class="areas" id="areas" aria-label="区域"></nav>
+      <label class="search"><svg class="icon"><use href="#i-search"/></svg><input id="room-search" type="search" placeholder="搜索房间" aria-label="搜索房间" autocomplete="off"></label>
+      <div class="list-heading"><span>房间</span><span id="room-count" class="numeric"></span></div>
+      <div class="rooms" id="rooms" aria-label="房间列表"></div>
+    </aside>
+    <section class="editor" aria-label="三维视图">
+      <div class="editor-header">
+        <div class="scene-title"><p id="scene-path">S3DIS</p><h2 id="scene-name">正在载入</h2></div>
+        <div class="segments" id="modes" role="group" aria-label="点云着色">
+          <button type="button" data-mode="rgb" aria-pressed="false">原始颜色</button>
+          <button type="button" data-mode="semantic" aria-pressed="true">语义标签</button>
+          <button type="button" data-mode="height" aria-pressed="false">相对高度</button>
+        </div>
+      </div>
+      <div class="stage" id="stage">
+        <canvas id="viewport" tabindex="0" aria-label="三维点云。方向键旋转，加减键缩放，Home 键回到初始视角。"></canvas>
+        <div class="stage-top"><span class="stage-chip" id="stage-source">S3DIS</span><span class="stage-chip" id="stage-clip" hidden></span></div>
+        <div class="orientations" id="orientations" role="group" aria-label="相机方向">
+          <button type="button" data-view="iso" aria-pressed="true">斜视</button>
+          <button type="button" data-view="top" aria-pressed="false">顶视</button>
+          <button type="button" data-view="front" aria-pressed="false">正视</button>
+          <button type="button" data-view="side" aria-pressed="false">侧视</button>
+        </div>
+        <div class="stage-message" id="stage-message" role="status" hidden></div>
+        <div class="height-legend" id="height-legend" hidden><div class="height-ramp"></div><div><span id="height-low"></span><span id="height-high"></span></div></div>
+      </div>
+      <div class="tool-row" aria-label="视图工具">
+        <div class="tool-group" role="group" aria-label="交互工具">
+          <button class="tool" type="button" id="inspect-tool" aria-pressed="true"><svg class="icon"><use href="#i-target"/></svg>拾取</button>
+          <button class="tool" type="button" id="measure-tool" aria-pressed="false"><svg class="icon"><use href="#i-ruler"/></svg>测距</button>
+          <button class="tool" type="button" id="clip-tool" aria-pressed="false"><svg class="icon"><use href="#i-cut"/></svg>剖切</button>
+        </div>
+        <div class="tool-group">
+          <button class="tool" type="button" id="home-tool"><svg class="icon"><use href="#i-center"/></svg>适应视图</button>
+          <button class="tool" type="button" id="snapshot-tool"><svg class="icon"><use href="#i-camera"/></svg>导出截图</button>
+        </div>
+      </div>
+      <div class="clip-row" id="clip-options" hidden>
+        <label for="clip-range">剖切高度</label><input id="clip-range" type="range" min="0" max="1000" value="1000"><output id="clip-value" class="numeric"></output>
+      </div>
+      <footer class="editor-footer"><span id="hint">拖拽旋转 · 滚轮缩放 · Shift 拖拽平移</span><span id="load-status" role="status"></span></footer>
+    </section>
+    <aside class="sidebar inspector" aria-label="数据检查">
+      <div class="panel-title"><svg class="icon"><use href="#i-target"/></svg><h2>数据检查</h2></div>
+      <dl class="scene-stats"><div><dt>原始点数</dt><dd id="raw-count" class="numeric">—</dd></div><div><dt>渲染点数</dt><dd id="render-count" class="numeric">—</dd></div><div><dt>场景尺寸</dt><dd id="scene-size" class="numeric">—</dd></div></dl>
+      <div class="scale-control"><label for="point-size">点大小</label><output id="size-value" class="numeric">2.2 px</output><input type="range" id="point-size" min="1" max="6" step="0.1" value="2.2"></div>
+      <section class="class-section" aria-labelledby="classes-title">
+        <div class="section-heading"><h3 id="classes-title">类别分布</h3><button type="button" class="text-button" id="reset-class" hidden>取消筛选</button></div>
+        <p class="section-meta" id="class-description"></p><div class="class-list" id="classes"></div>
+      </section>
+      <section class="selection-section" aria-labelledby="selection-title">
+        <div class="section-heading"><h3 id="selection-title">拾取结果</h3><button type="button" class="text-button" id="clear-selection" hidden>清除</button></div>
+        <div id="selection" aria-live="polite"><p class="section-meta">点击视图里的点查看坐标。</p></div>
+      </section>
+    </aside>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
